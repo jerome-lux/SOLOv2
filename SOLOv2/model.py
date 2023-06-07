@@ -468,6 +468,7 @@ def FPNv2(connection_layers,
 def flatten_predictions(predictions, ncls=1, kernel_depth=256):
     """Flatten and concat solo head predictions for each FPN level
     predictions: [pred_cls_list, pred_kernel_list] each list contains predictions by level
+    TODO: add strides tensor as output to filter binary masks by size
     """
 
     num_lvl = len(predictions[0])
@@ -493,6 +494,7 @@ def flatten_predictions(predictions, ncls=1, kernel_depth=256):
 def compute_one_image_masks(
         inputs, cls_threshold=0.5, mask_threshold=0.5, kernel_size=1, kernel_depth=256, max_inst=400):
     """given predicted class results and predicted kernels, compute the output one encoded mask tensor
+        How to implement mask size filtering by strides whereas all inputs are flattened?
     """
 
     flat_pred_cls = inputs[0]
@@ -502,29 +504,31 @@ def compute_one_image_masks(
     # Only one prediction by pixel
     cls_labels = tf.argmax(flat_pred_cls, axis=-1)
     flat_pred_cls = tf.reduce_max(flat_pred_cls, axis=-1)
-    cls_preds = tf.sigmoid(flat_pred_cls)
-    positive_idx = tf.where(cls_preds >= cls_threshold)
+    # cls_preds = tf.sigmoid(flat_pred_cls)
+    positive_idx = tf.where(flat_pred_cls >= cls_threshold)
 
-    cls_scores = tf.gather_nd(cls_preds, positive_idx)
+    cls_scores = tf.gather_nd(flat_pred_cls, positive_idx)
     cls_labels = tf.gather_nd(cls_labels, positive_idx)
 
     kernel_preds = tf.gather(flat_pred_kernel, positive_idx[:, 0])  # shape [N, kernel_depth*kernel_size**2]
-    kernel_preds = tf.transpose(kernel_preds) #[kernel_depth*kernel_size**2, N]
+    kernel_preds = tf.transpose(kernel_preds)  # [kernel_depth*kernel_size**2, N]
     kernel_preds = tf.reshape(kernel_preds, (kernel_size, kernel_size, kernel_depth, -1))  # SHAPE [ks, ks, cin, cout] where cin=kernel_depth, cout=N isntances
 
     seg_preds = tf.sigmoid(tf.nn.conv2d(masks_head_output[tf.newaxis, ...], kernel_preds,
                            strides=1, padding="VALID"))[0]  # results is shape [H, W, ninstances]
     seg_preds = tf.transpose(seg_preds, perm=[2, 0, 1])  # reshape to [ninstances, H, W]
-    binary_masks = tf.where(seg_preds >= mask_threshold, 1., 0.) #[N, H, W]
+    binary_masks = tf.where(seg_preds >= mask_threshold, 1., 0.) # [N, H, W]
 
     mask_sum = tf.reduce_sum(binary_masks, axis=[1, 2])  # area of each instance (one instance per slice) -> [N]
+
     # scale the category score by mask confidence
     mask_scores = tf.math.divide_no_nan(tf.reduce_sum(seg_preds * binary_masks, axis=[1, 2]), mask_sum) # [N]
 
-    scores = cls_scores * mask_scores   #[N]
+    scores = cls_scores * mask_scores   # [N]
 
     seg_preds, scores, cls_labels = matrix_nms(cls_labels, scores, seg_preds,
-                                               binary_masks, mask_sum, post_nms_k=max_inst, score_threshold=cls_threshold)
+                                               binary_masks, mask_sum, post_nms_k=max_inst,
+                                               score_threshold=cls_threshold)
     # seg_preds = tf.RaggedTensor.from_tensor(tf.reshape(seg_preds,[-1,tf.shape(seg_preds)[1]*tf.shape(seg_preds)[2]]))
     seg_preds = tf.RaggedTensor.from_tensor(seg_preds)
     # scores = tf.RaggedTensor.from_tensor(scores)
@@ -562,7 +566,7 @@ def matrix_nms(
     compensate_iou = tf.reduce_max(decay_iou, axis=0)
     compensate_iou = tf.tile(compensate_iou[..., tf.newaxis], multiples=[1, num_selected])
     # matrix nms
-    decay_coefficient = tf.reduce_min(tf.divide_no_nan(tf.exp(-2 * decay_iou**2), tf.exp(-2 * compensate_iou**2)), axis=0)
+    decay_coefficient = tf.reduce_min(tf.math.divide_no_nan(tf.exp(-2 * decay_iou**2), tf.exp(-2 * compensate_iou**2)), axis=0)
     scores = scores * decay_coefficient
     # scores = tf.where(scores >= score_threshold, scores, 0)
     indices = tf.where(scores >= score_threshold)
@@ -603,7 +607,6 @@ def compute_masks(flat_cls_pred,
                                   kernel_depth=kernel_depth,
                                   max_inst=max_inst)
 
-    print("mask_features before", mask_features.shape)
     seg_preds, scores, cls_labels = tf.map_fn(
         prediction_function, [flat_cls_pred, flat_kernel_pred, mask_features],
         fn_output_signature=(tf.RaggedTensorSpec(shape=(None, None, None), dtype=tf.float32, ragged_rank=1),
@@ -611,6 +614,12 @@ def compute_masks(flat_cls_pred,
                              tf.RaggedTensorSpec(shape=(None), dtype=tf.int64, ragged_rank=0)))
     # return predicted segmentation masks as [B, N , H, W] ragged tensor
     return seg_preds, scores, cls_labels
+
+
+def points_nms(x):
+    x_max_pool = tf.nn.max_pool2d(x, ksize=2, strides=1, padding=[[0, 0], [1, 1], [1, 1], [0, 0]])[:, :-1, :-1, :]
+    x = tf.where(tf.equal(x, x_max_pool), x, 0)
+    return x
 
 
 class SOLOv2Model(tf.keras.Model):
@@ -652,6 +661,10 @@ class SOLOv2Model(tf.keras.Model):
         default_kwargs.update(kwargs)
 
         mask_head_output, feat_cls_list, feat_kernel_list = self.model(inputs, training=training)
+
+        # Apply Points NMS in inference
+        for lvl in range(len(feat_cls_list)):
+            feat_cls_list[lvl] = points_nms(tf.sigmoid(feat_cls_list[lvl]))
 
         flatten_predictions_func = partial(flatten_predictions, ncls=self.ncls, kernel_depth=self.kernel_depth)
         flat_cls_pred, flat_kernel_pred = tf.map_fn(
