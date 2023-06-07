@@ -1,6 +1,7 @@
 # SOLOv2
 
-Tensorflow implementation of [SOLOv2] https://arxiv.org/pdf/2003.10152.pdf in full graph mode for better performance<br>
+Tensorflow implementation of [SOLOv2](https://arxiv.org/pdf/2003.10152.pdf) (Segmenting Objects by LOcations) in full graph mode for better performance<br>
+This implementation is partly inspired by https://www.fastestimator.org/
 
 ## Creating the model
 First, create a config object
