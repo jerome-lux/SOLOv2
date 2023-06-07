@@ -42,7 +42,7 @@ Then create the model:
     mySOLOv2model = SOLOv2.model.SOLOv2Model(config)
 
 ## Training with custom dataset: <br>
-Files are stored in 3 folders:
+Files are stored in 3 folders:<br>
 /images: RGB images <br>
 /labels: labeled masks grey-level images (8, 16 or 32 bits int / uint) in **non compressed** format (png or bmp) <br>
 /annotations: one json file per image containing a dict of dicts keyed by labels, with the class, and box coordinates in [x0, y0, x1, y1] format <br>
