@@ -30,7 +30,8 @@ def compute_solo_cls_targets(inputs,
     masks = inputs[3]
 
     # OHE with bg
-    masks = tf.one_hot(masks, tf.shape(labels)[0] + 1)
+    maxlabel = tf.reduce_max(labels)
+    masks = tf.one_hot(masks, maxlabel + 1)
 
     nx, ny = shape
     nx = tf.cast(nx, tf.float32)
