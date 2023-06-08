@@ -492,7 +492,7 @@ def flatten_predictions(predictions, ncls=1, kernel_depth=256):
 
 @tf.function
 def compute_one_image_masks(
-        inputs, cls_threshold=0.5, mask_threshold=0.5, kernel_size=1, kernel_depth=256, max_inst=400):
+        inputs, cls_threshold=0.5, mask_threshold=0.5, nms_threshold=0.1,  kernel_size=1, kernel_depth=256, max_inst=400):
     """given predicted class results and predicted kernels, compute the output one encoded mask tensor
         How to implement mask size filtering by strides whereas all inputs are flattened?
     """
@@ -515,7 +515,7 @@ def compute_one_image_masks(
     kernel_preds = tf.reshape(kernel_preds, (kernel_size, kernel_size, kernel_depth, -1))  # SHAPE [ks, ks, cin, cout] where cin=kernel_depth, cout=N isntances
 
     seg_preds = tf.sigmoid(tf.nn.conv2d(masks_head_output[tf.newaxis, ...], kernel_preds,
-                           strides=1, padding="VALID"))[0]  # results is shape [H, W, ninstances]
+                           strides=1, padding="SAME"))[0]  # results is shape [H, W, ninstances]
     seg_preds = tf.transpose(seg_preds, perm=[2, 0, 1])  # reshape to [ninstances, H, W]
     binary_masks = tf.where(seg_preds >= mask_threshold, 1., 0.) # [N, H, W]
 
@@ -528,7 +528,7 @@ def compute_one_image_masks(
 
     seg_preds, scores, cls_labels = matrix_nms(cls_labels, scores, seg_preds,
                                                binary_masks, mask_sum, post_nms_k=max_inst,
-                                               score_threshold=cls_threshold)
+                                               score_threshold=nms_threshold)
     # seg_preds = tf.RaggedTensor.from_tensor(tf.reshape(seg_preds,[-1,tf.shape(seg_preds)[1]*tf.shape(seg_preds)[2]]))
     seg_preds = tf.RaggedTensor.from_tensor(seg_preds)
     # scores = tf.RaggedTensor.from_tensor(scores)
@@ -558,29 +558,31 @@ def matrix_nms(
     union = mask_sum + tf.transpose(mask_sum) - intersection
     iou = tf.math.divide_no_nan(intersection, union)
     iou = tf.linalg.band_part(iou, 0, -1) - tf.linalg.band_part(iou, 0, 0)  # equivalent of np.triu(diagonal=1)
+
     # iou decay and compensation
     labels_match = tf.tile(cls_labels[tf.newaxis, ...], multiples=[num_selected, 1])
     labels_match = tf.where(labels_match == tf.transpose(labels_match), 1.0, 0.0)
     labels_match = tf.linalg.band_part(labels_match, 0, -1) - tf.linalg.band_part(labels_match, 0, 0)
+
     decay_iou = iou * labels_match  # iou with any object from same class
     compensate_iou = tf.reduce_max(decay_iou, axis=0)
     compensate_iou = tf.tile(compensate_iou[..., tf.newaxis], multiples=[1, num_selected])
     # matrix nms
-    decay_coefficient = tf.reduce_min(tf.math.divide_no_nan(tf.exp(-2 * decay_iou**2), tf.exp(-2 * compensate_iou**2)), axis=0)
+    decay_coefficient = tf.reduce_min(tf.exp(-2 * (decay_iou**2 - compensate_iou**2)), axis=0)
+
     scores = scores * decay_coefficient
     # scores = tf.where(scores >= score_threshold, scores, 0)
     indices = tf.where(scores >= score_threshold)
     scores = tf.gather_nd(scores, indices)
+    seg_preds = tf.gather(seg_preds, tf.reshape(indices, [-1]))
+
     num_selected = tf.minimum(post_nms_k, tf.shape(scores)[0])
     # select the final predictions
-    indices = tf.argsort(scores, direction='DESCENDING')[:num_selected]
-
-    seg_preds = tf.gather(seg_preds, indices)
-    scores = tf.gather(scores, indices)
-    cls_labels = tf.gather(cls_labels, indices)
+    sorted_indices = tf.argsort(scores, direction='DESCENDING')[:num_selected]
+    scores = tf.gather(scores, tf.reshape(sorted_indices, [-1]))
+    cls_labels = tf.gather(cls_labels, tf.reshape(sorted_indices, [-1]))
 
     return seg_preds, scores, cls_labels
-
 
 @tf.function
 def compute_masks(flat_cls_pred,
@@ -588,6 +590,7 @@ def compute_masks(flat_cls_pred,
                   mask_features,
                   cls_threshold=0.5,
                   mask_threshold=0.5,
+                  nms_threshold=0.1,
                   ncls=1,
                   kernel_depth=256,
                   kernel_size=1,
@@ -603,6 +606,7 @@ def compute_masks(flat_cls_pred,
     prediction_function = partial(compute_one_image_masks,
                                   cls_threshold=cls_threshold,
                                   mask_threshold=mask_threshold,
+                                  nms_threshold=nms_threshold,
                                   kernel_size=kernel_size,
                                   kernel_depth=kernel_depth,
                                   max_inst=max_inst)
@@ -655,6 +659,7 @@ class SOLOv2Model(tf.keras.Model):
 
         default_kwargs = {"score_threshold": 0.5,
                           "seg_threshold": 0.5,
+                          "nms_threshold": 0.1,
                           "max_detections": 400
                           }
 
@@ -702,7 +707,7 @@ class SOLOv2Model(tf.keras.Model):
                                        scale_ranges=self.config.scale_ranges,
                                        offset_factor=self.config.offset_factor)
         class_targets, label_targets = tf.map_fn(
-            compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids),
+            compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids, gt_mask_img),
             fn_output_signature=(tf.int32, tf.int32))
 
         # OHE class tragets and delete bg
@@ -719,6 +724,8 @@ class SOLOv2Model(tf.keras.Model):
                 flatten_predictions_func, [feat_cls_list, feat_kernel_list],
                 fn_output_signature=(tf.float32, tf.float32))
 
+            flat_cls_pred = tf.sigmoid(flat_cls_pred)
+
             loss_function = partial(compute_image_loss, weights=self.config.lossweights,
                                     kernel_size=self.config.kernel_size, kernel_depth=self.config.mask_output_filters)
             cls_loss, seg_loss = tf.map_fn(
@@ -730,27 +737,25 @@ class SOLOv2Model(tf.keras.Model):
             cls_loss = tf.reduce_mean(cls_loss)
             seg_loss = tf.reduce_mean(seg_loss)
 
-            # Update metrics
+            # Update loss
             self.seg_loss.update_state(seg_loss)
             self.cls_loss.update_state(cls_loss)
 
             total_loss = cls_loss + seg_loss
             self.total_loss.update_state(total_loss)
 
-            # Metrics
-            if self.ncls == 1:
-                cls_probs = tf.math.sigmoid(flat_cls_pred)
-                self.acc_metric.update_state(class_targets, cls_probs)
-                self.recall.update_state(class_targets, cls_probs)
-            else:
-                cls_probs = tf.math.sigmoid(flat_cls_pred)
-                self.acc_metric.update_state(class_targets, cls_probs)
-                self.recall.update_state(classes_targets_with_bg, cls_probs)
-
             grads = tape.gradient(total_loss, self.trainable_variables)
 
             self.optimizer.apply_gradients((grad, var) for (grad, var) in zip(
                 grads, self.trainable_variables) if grad is not None)
+
+        # Update Metrics
+        if self.ncls == 1:
+            self.acc_metric.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
+            self.recall.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
+        else:
+            self.acc_metric.update_state(class_targets, flat_cls_pred)
+            self.recall.update_state(classes_targets_with_bg, flat_cls_pred)
 
         return {m.name: m.result() for m in self.metrics}
 
@@ -772,7 +777,7 @@ class SOLOv2Model(tf.keras.Model):
                                        scale_ranges=self.config.scale_ranges,
                                        offset_factor=self.config.offset_factor)
         class_targets, label_targets = tf.map_fn(
-            compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids),
+            compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids, gt_mask_img),
             fn_output_signature=(tf.int32, tf.int32))
 
         # OHE class tragets
@@ -787,6 +792,8 @@ class SOLOv2Model(tf.keras.Model):
             flatten_predictions_func, [feat_cls_list, feat_kernel_list],
             fn_output_signature=(tf.float32, tf.float32))
 
+        flat_cls_pred = tf.sigmoid(flat_cls_pred)
+
         loss_function = partial(compute_image_loss, weights=self.config.lossweights,
                                 kernel_size=self.config.kernel_size, kernel_depth=self.config.mask_output_filters)
         cls_loss, seg_loss = tf.map_fn(
@@ -800,13 +807,11 @@ class SOLOv2Model(tf.keras.Model):
 
         # Update Metrics
         if self.ncls == 1:
-            cls_probs = tf.math.sigmoid(flat_cls_pred)
-            self.acc_metric.update_state(class_targets[..., tf.newaxis], cls_probs)
-            self.recall.update_state(class_targets[..., tf.newaxis], cls_probs)
+            self.acc_metric.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
+            self.recall.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
         else:
-            cls_probs = tf.math.sigmoid(flat_cls_pred)
-            self.acc_metric.update_state(class_targets, cls_probs)
-            self.recall.update_state(classes_targets_with_bg, cls_probs)
+            self.acc_metric.update_state(class_targets, flat_cls_pred)
+            self.recall.update_state(classes_targets_with_bg, flat_cls_pred)
 
         # Update loss
         self.seg_loss.update_state(seg_loss)

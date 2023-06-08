@@ -37,7 +37,7 @@ class Config():
         self.kernel_size = 1
         self.grid_sizes = [64, 36, 24, 16, 12]
         self.scale_ranges = [[1, 96], [48, 192], [96, 384], [192, 768], [384, 2048]]
-        self.offset_factor = 0.2
+        self.offset_factor = 0.25
 
         # SOLO MASK head
         self.mask_mid_filters = 128

@@ -28,6 +28,7 @@ def compute_image_loss(inputs, weights=[1., 1.], kernel_size=1, kernel_depth=256
     ohe_masks = tf.one_hot(gt_masks, max_label+1)[...,1:] #max label + 1 for bg
     # ohe_masks = tf.reshape(ohe_masks,[-1])
     # print("OHE GT MASK", ohe_masks.shape, ohe_masks.shape[:-1])
+    # Here, each gt pixel is associated with a mask. Pixels of the same object are associated with the same masks
     mask_targets = tf.TensorArray(tf.float32, size=0, dynamic_size=True, element_shape=ohe_masks.shape[:-1])
     for i in tf.range(tf.shape(pos_idx)[0]):
         mask_targets = mask_targets.write(tf.cast(i, tf.int32), ohe_masks[..., labels_targets[pos_idx[i,0]] - 1]) #labels - 1 because label 1 is at slice 0
@@ -41,10 +42,10 @@ def compute_image_loss(inputs, weights=[1., 1.], kernel_size=1, kernel_depth=256
     kernel_pred = tf.gather(kernel_pred, pos_idx[:, 0]) # shape [n_inst, kernel_depth*kernel_size**2]
     kernel_pred = tf.transpose(kernel_pred)
     kernel_pred = tf.reshape(kernel_pred, (kernel_size, kernel_size, kernel_depth, -1)) # SHAPE [ks, ks, cin, cout]
-    seg_preds = tf.sigmoid(tf.nn.conv2d(mask_head_pred[tf.newaxis, ...], kernel_pred, strides=1, padding="VALID")) # shape [1, H, W, ninstances]
+    seg_preds = tf.sigmoid(tf.nn.conv2d(mask_head_pred[tf.newaxis, ...], kernel_pred, strides=1, padding="SAME")) # shape [1, H, W, ninstances]
     seg_preds = tf.transpose(seg_preds[0], perm=[2, 0, 1])  # reshape to [ninstances, H, W]
 
-    cls_loss = focal_loss(tf.sigmoid(cls_pred), cls_targets)
+    cls_loss = focal_loss(cls_pred, cls_targets)
     seg_loss = dice_loss(seg_preds, mask_targets)
 
     return cls_loss * weights[0], seg_loss * weights[1]
@@ -65,4 +66,4 @@ def dice_loss(pred, gt):
     b = tf.reduce_sum(pred * pred)
     c = tf.reduce_sum(gt * gt)
     dice = tf.math.divide_no_nan((2 * a), (b + c))
-    return 1 - tf.where(dice > 0, dice, 1.)
+    return 1 - dice  # tf.where(dice > 0, dice, 1.)

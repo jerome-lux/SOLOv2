@@ -101,7 +101,7 @@ class DataLoader():
         mask = np.array(Image.open(maskfn.numpy())).astype(np.int32)
         # mask = tf.io.decode_image(tf.io.read_file(maskfn), channels=1)
         nx, ny = tf.shape(image)[0], tf.shape(image)[1]
-        mask = tf.image.resize(mask[...,tf.newaxis], size=(nx//2,ny//2), method='nearest')
+        mask = tf.image.resize(mask[...,tf.newaxis], size=(nx//2, ny//2), method='nearest')
         # print(nx,ny)
 
         with open(datafn.numpy(), "r") as jsonfile:
@@ -117,7 +117,7 @@ class DataLoader():
 
         return os.path.splitext(os.path.basename(imgfn.numpy()))[0], \
             image, \
-            mask[...,0], \
+            mask[..., 0], \
             tf.RaggedTensor.from_tensor(tf.convert_to_tensor(bboxes, dtype=tf.float32)[tf.newaxis, ...]), \
             tf.RaggedTensor.from_tensor(tf.convert_to_tensor(classes, dtype=tf.int32)[tf.newaxis, ...]), \
             tf.RaggedTensor.from_tensor(tf.convert_to_tensor(labels, dtype=tf.int32)[tf.newaxis, ...])

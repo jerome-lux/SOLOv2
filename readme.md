@@ -10,7 +10,7 @@ First, create a config object
 
 You can also customize the config:
 
-    params = {}
+    params = {
     "load_backbone":False,
     "backbone_params":{},
     "backbone":'resnext50',
