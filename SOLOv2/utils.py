@@ -9,17 +9,20 @@ def compute_solo_cls_targets(inputs,
                              strides=[4, 8, 16, 32, 64],
                              grid_sizes=[64, 36, 24, 16, 12],
                              scale_ranges=[[1, 96], [48, 192], [96, 384], [192, 768], [384, 2048]],
+                             mode='diag',
                              offset_factor=0.25):
     """
     inputs:
-        bboxes [n, 4] in *normalized coordinates*
-        labels [n] labels of objects
-        classes [n] class ids
-        masks [H/2, W/2]
+        (bboxes, labels, classes, masks)
+        bboxes: [n, 4] in *normalized coordinates*
+        labels: [n] labels of objects
+        classes: [n] class ids
+        masks: [H/2, W/2]
         shape of original image
         strides: (list of ints) strides of the pyramid levels
         grid_size: size of grids of different FPN levels
         scale_ranges: scale ranges for each level
+        mode: either 'min': min(dx, dy) of 'diag': sqrt(dx*dy)
         offset_factor: control the size of the positive box (cx +/- offset_factor*dx*0.5, cy +/- offset_factor*dy*0.5). dx, dy = box side lentghs
         default 0.5 (half-box)
 
@@ -38,12 +41,18 @@ def compute_solo_cls_targets(inputs,
     ny = tf.cast(ny, tf.float32)
     maxdim = tf.maximum(nx, ny)
 
-    # bboxes size
-    dx = (bboxes[..., 2] - bboxes[..., 0]) * nx
-    dy = (bboxes[..., 3] - bboxes[..., 1]) * ny
+    # bboxes size x0, y0, x1, y1 where x1 and y1 are OUTSIDE the box
+    dx = tf.maximum((bboxes[..., 2] - bboxes[..., 0]) * (nx - 1) - 1, 0.)
+    dy = tf.maximum((bboxes[..., 3] - bboxes[..., 1]) * (ny - 1) - 1, 0.)
 
-    object_scale = tf.math.sqrt(dx * dy)
     dmin = tf.math.minimum(dx, dy)
+
+    if mode == 'min':
+        object_scale = dmin
+    elif mode == 'max':
+        object_scale = tf.math.maximum(dx, dy)
+    else:
+        object_scale = tf.math.sqrt(dx * dy)
 
     idx_per_lvl = []
     bboxes_per_lvl = []
@@ -52,7 +61,7 @@ def compute_solo_cls_targets(inputs,
 
     # Get object ids for each FPN level
     for lvl, (minsize, maxsize) in enumerate(scale_ranges):
-        if lvl + 1  < len(grid_sizes) - 1:
+        if lvl + 1 < len(grid_sizes) - 1:
             filtered_idx = tf.where(
                 (((object_scale >= minsize) & (object_scale <= maxsize) & (dmin >= strides[lvl])) |
                     ((object_scale > maxsize) & (dmin < strides[lvl + 1]) & (dmin >= strides[lvl]))))
@@ -106,23 +115,24 @@ def compute_solo_cls_targets(inputs,
                 # box = denorm_boxes_lvl[i, ...]
                 lab = ordered_labels[i]
 
+                # Normalized coordinates
                 coords = tf.where(masks[..., lab] > 0)
-                cx = tf.reduce_mean(tf.cast(coords[:,0], tf.float32)) * 2 / nx
-                cy = tf.reduce_mean(tf.cast(coords[:,1], tf.float32)) * 2 / ny
-                dx = tf.reduce_max(coords[:,0]) - tf.reduce_min(coords[:, 0])
-                dy = tf.reduce_max(coords[:,1]) - tf.reduce_min(coords[:, 1])
+                cx = tf.reduce_mean(tf.cast(coords[:, 0], tf.float32)) / tf.cast((tf.shape(masks)[0] - 1), tf.float32)
+                cy = tf.reduce_mean(tf.cast(coords[:, 1], tf.float32)) / tf.cast((tf.shape(masks)[1] - 1), tf.float32)
 
-                dx = tf.cast(dx, tf.float32) * 2 / nx
-                dy = tf.cast(dy, tf.float32) * 2 / ny
+                dx = tf.reduce_max(coords[:, 0]) - tf.reduce_min(coords[:, 0])
+                dy = tf.reduce_max(coords[:, 1]) - tf.reduce_min(coords[:, 1])
+                dx = tf.cast(dx, tf.float32) / tf.cast((tf.shape(masks)[0] - 1), tf.float32)
+                dy = tf.cast(dy, tf.float32) / tf.cast((tf.shape(masks)[1] - 1), tf.float32)
 
                 # inside_indices = tf.where((locations_lvl[:, 0] >= tf.math.floor(cx - x_offset)) &
                 #                           (locations_lvl[:, 0] <= tf.math.ceil(cx + x_offset)) &
                 #                           (locations_lvl[:, 1] >= tf.math.floor(cy - y_offset)) &
                 #                           (locations_lvl[:, 1] <= tf.math.ceil(cy + y_offset)))
-                inside_indices = tf.where((locations_lvl[:, 0] >= lvl_nx * (cx - dx * offset_factor)) &
-                                          (locations_lvl[:, 0] < lvl_nx * (cx + dx * offset_factor)) &
-                                          (locations_lvl[:, 1] >= lvl_ny * (cy - dy * offset_factor)) &
-                                          (locations_lvl[:, 1] < lvl_ny * (cy + dy * offset_factor)))
+                inside_indices = tf.where((locations_lvl[:, 0] >= lvl_nx * (cx - dx * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 0] < lvl_nx * (cx + dx * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 1] >= lvl_ny * (cy - dy * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 1] < lvl_ny * (cy + dy * offset_factor) - 0.5))
 
                 cx = tf.maximum(tf.cast(tf.math.round(lvl_nx * cx - 0.5), tf.int32), 0)
                 cy = tf.maximum(tf.cast(tf.math.round(lvl_ny * cy - 0.5), tf.int32), 0)
