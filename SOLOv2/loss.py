@@ -25,7 +25,7 @@ def compute_image_loss(inputs, weights=[1., 1.], kernel_size=1, kernel_depth=256
     max_label = tf.reduce_max(labels)
     pos_idx = tf.where(labels_targets > 0)
 
-    ohe_masks = tf.one_hot(gt_masks, max_label+1)[...,1:] #max label + 1 for bg
+    ohe_masks = tf.one_hot(gt_masks, max_label+1)[..., 1:] # max label + 1 for bg
     # ohe_masks = tf.reshape(ohe_masks,[-1])
     # print("OHE GT MASK", ohe_masks.shape, ohe_masks.shape[:-1])
     # Here, each gt pixel is associated with a mask. Pixels of the same object are associated with the same masks
@@ -39,7 +39,7 @@ def compute_image_loss(inputs, weights=[1., 1.], kernel_size=1, kernel_depth=256
     # mask_targets = tf.repeat(ohe_masks, repeats=labels, axis=-1)
 
     # Get the kernels corresponding to positive GT
-    kernel_pred = tf.gather(kernel_pred, pos_idx[:, 0]) # shape [n_inst, kernel_depth*kernel_size**2]
+    kernel_pred = tf.gather(kernel_pred, pos_idx[:, 0])  # shape [n_inst, kernel_depth*kernel_size**2]
     kernel_pred = tf.transpose(kernel_pred)
     kernel_pred = tf.reshape(kernel_pred, (kernel_size, kernel_size, kernel_depth, -1)) # SHAPE [ks, ks, cin, cout]
     seg_preds = tf.sigmoid(tf.nn.conv2d(mask_head_pred[tf.newaxis, ...], kernel_pred, strides=1, padding="SAME")) # shape [1, H, W, ninstances]

@@ -12,7 +12,7 @@ from . import utils
 from .backbone import build_backbone
 from .layers import convblock, pad_with_coord
 from .loss import compute_image_loss
-from .metrics import BinaryRecall, CategoricalRecall
+from .metrics import BinaryRecall, BinaryPrecision
 
 import tensorflow.keras.layers as layers
 
@@ -492,7 +492,7 @@ def flatten_predictions(predictions, ncls=1, kernel_depth=256):
 
 @tf.function
 def compute_one_image_masks(
-        inputs, cls_threshold=0.5, mask_threshold=0.5, nms_threshold=0.1,  kernel_size=1, kernel_depth=256, max_inst=400):
+        inputs, cls_threshold=0.5, mask_threshold=0.5, nms_threshold=0.5,  kernel_size=1, kernel_depth=256, max_inst=400):
     """given predicted class results and predicted kernels, compute the output one encoded mask tensor
         How to implement mask size filtering by strides whereas all inputs are flattened?
     """
@@ -540,7 +540,7 @@ def compute_one_image_masks(
 @tf.function
 def matrix_nms(
         cls_labels, scores, seg_preds, binary_masks, mask_sum, sigma=0.5, pre_nms_k=1000, post_nms_k=500,
-        score_threshold=0.05):
+        score_threshold=0.5):
 
     # Select only first pre_nms_k instances (sorted by scores)
     num_selected = tf.minimum(pre_nms_k, tf.shape(scores)[0])
@@ -590,8 +590,7 @@ def compute_masks(flat_cls_pred,
                   mask_features,
                   cls_threshold=0.5,
                   mask_threshold=0.5,
-                  nms_threshold=0.1,
-                  ncls=1,
+                  nms_threshold=0.5,
                   kernel_depth=256,
                   kernel_size=1,
                   max_inst=400):
@@ -642,24 +641,21 @@ class SOLOv2Model(tf.keras.Model):
         self.cls_loss = tf.keras.metrics.Mean(name="cls_loss", dtype=tf.float32)
         self.total_loss = tf.keras.metrics.Mean(name="total_loss", dtype=tf.float32)
 
-        #Metrics
-        if self.ncls == 1:
-            self.acc_metric = tf.keras.metrics.BinaryAccuracy(name="accuracy")
-            self.recall = BinaryRecall(name="binary_recall")
-        else:
-            self.acc_metric = tf.keras.metrics.CategoricalAccuracy(name="accuracy")
-            self.recall = CategoricalRecall(name="cat_recall")
+        # Metrics
+        self.precision = BinaryPrecision(name="precision")
+        self.recall = BinaryRecall(name="recall")
+
 
     @property
     def metrics(self):
 
-        return [self.acc_metric, self.recall, self.cls_loss, self.seg_loss, self.total_loss]
+        return [self.precision, self.recall, self.cls_loss, self.seg_loss, self.total_loss]
 
     def call(self, inputs, training=False, **kwargs):
 
         default_kwargs = {"score_threshold": 0.5,
                           "seg_threshold": 0.5,
-                          "nms_threshold": 0.1,
+                          "nms_threshold": 0.5,
                           "max_detections": 400
                           }
 
@@ -681,7 +677,7 @@ class SOLOv2Model(tf.keras.Model):
                                                       mask_head_output,
                                                       cls_threshold=default_kwargs["score_threshold"],
                                                       mask_threshold=default_kwargs["seg_threshold"],
-                                                      ncls=self.ncls,
+                                                      nms_threshold=default_kwargs["nms_threshold"],
                                                       kernel_depth=self.config.mask_output_filters,
                                                       kernel_size=self.config.kernel_size,
                                                       max_inst=default_kwargs["max_detections"])
@@ -710,9 +706,8 @@ class SOLOv2Model(tf.keras.Model):
             compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids, gt_mask_img),
             fn_output_signature=(tf.int32, tf.int32))
 
-        # OHE class tragets and delete bg
-        classes_targets_with_bg = tf.one_hot(class_targets, self.ncls+1)
-        class_targets = classes_targets_with_bg[..., 1:]
+        # OHE class targets and delete bg
+        class_targets = tf.one_hot(class_targets, self.ncls+1)[..., 1:]
 
         with tf.GradientTape() as tape:
 
@@ -751,11 +746,9 @@ class SOLOv2Model(tf.keras.Model):
 
         # Update Metrics
         if self.ncls == 1:
-            self.acc_metric.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
-            self.recall.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
-        else:
-            self.acc_metric.update_state(class_targets, flat_cls_pred)
-            self.recall.update_state(classes_targets_with_bg, flat_cls_pred)
+            class_targets = class_targets[..., tf.newaxis]
+        self.precision.update_state(class_targets, flat_cls_pred)
+        self.recall.update_state(class_targets, flat_cls_pred)
 
         return {m.name: m.result() for m in self.metrics}
 
@@ -771,7 +764,6 @@ class SOLOv2Model(tf.keras.Model):
         ny = tf.shape(inputs[1])[2]
 
         # Compute targets
-
         compute_targets_func = partial(utils.compute_solo_cls_targets, shape=(nx, ny),
                                        strides=self.strides, grid_sizes=self.config.grid_sizes,
                                        scale_ranges=self.config.scale_ranges,
@@ -780,9 +772,8 @@ class SOLOv2Model(tf.keras.Model):
             compute_targets_func, (gt_boxes, gt_labels, gt_cls_ids, gt_mask_img),
             fn_output_signature=(tf.int32, tf.int32))
 
-        # OHE class tragets
-        classes_targets_with_bg = tf.one_hot(class_targets, self.ncls+1)
-        class_targets = classes_targets_with_bg[..., 1:]
+        # OHE class targets and delete bg
+        class_targets = tf.one_hot(class_targets, self.ncls+1)[..., 1:]
 
         mask_head_output, feat_cls_list, feat_kernel_list = self.model(gt_img, training=True)
 
@@ -807,11 +798,9 @@ class SOLOv2Model(tf.keras.Model):
 
         # Update Metrics
         if self.ncls == 1:
-            self.acc_metric.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
-            self.recall.update_state(class_targets[..., tf.newaxis], flat_cls_pred)
-        else:
-            self.acc_metric.update_state(class_targets, flat_cls_pred)
-            self.recall.update_state(classes_targets_with_bg, flat_cls_pred)
+            class_targets = class_targets[..., tf.newaxis]
+        self.precision.update_state(class_targets, flat_cls_pred)
+        self.recall.update_state(class_targets, flat_cls_pred)
 
         # Update loss
         self.seg_loss.update_state(seg_loss)
