@@ -16,6 +16,10 @@ NORM_DICT = {'bn': layers.BatchNormalization,
              'gn': tfa.layers.GroupNormalization,
              'ln': layers.LayerNormalization}
 
+def points_nms(x):
+    x_max_pool = tf.nn.max_pool2d(x, ksize=2, strides=1, padding=[[0, 0], [1, 1], [1, 1], [0, 0]])[:, :-1, :-1, :]
+    x = tf.where(tf.equal(x, x_max_pool), x, 0)
+    return x
 
 def pad_with_coord(data):
     data_shape = tf.shape(data)
