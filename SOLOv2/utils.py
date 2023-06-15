@@ -1,7 +1,45 @@
 import tensorflow as tf
 import numpy as np
 
-# @tf.center_of_mass()
+
+@tf.function
+def decode_predictions(seg_preds, scores, threshold=0.5, by_scores=True):
+
+    """ Compute the labeled mask array from segmentation predictions.
+    If two mask overlap, the one with either the higher score or the higher seg value is chosen
+    return labeled array
+    inputs:
+    seg_preds: (N, H, W) one predicted mask per slice (sigmoid activation)
+    scores: (N) score of each predicted instance
+    threshold: threshold;to compute binary masks
+    by_score (bool): if True, rank the masks by score, else, rank each pixel by their seg_pred value.
+    """
+    seg_preds = seg_preds.to_tensor()
+    binary_masks = tf.where(seg_preds >= threshold, 1, 0)
+    nx, ny = tf.shape(seg_preds)[1], tf.shape(seg_preds)[2]
+
+    if by_scores:
+        sorted_scores_inds = tf.argsort(scores, direction='DESCENDING')
+        sorted_scores = tf.gather(scores, sorted_scores_inds)
+        sorted_masks = tf.gather(binary_masks, sorted_scores_inds)
+        # weight masks by their respective scores
+        sorted_masks = tf.transpose(sorted_masks, [1, 2, 0]) * tf.cast(sorted_scores, tf.float32)
+        sorted_masks = tf.transpose(sorted_masks, [2, 0, 1])
+        # add bg slice
+        bg_slice = tf.zeros((1, nx, ny))
+        labeled_masks = tf.concat([bg_slice, binary_masks], axis=0)
+        # Take argmax (e.g. mask swith higher scores, when two masks overlap)
+        labeled_masks = tf.math.argmax(labeled_masks, axis=0)
+
+    else:
+        # Set seg_preds to 0 if < threshold
+        filt_seg = tf.where(seg_preds >= threshold, seg_preds, 0.)
+        bg_slice = tf.zeros((1, nx, ny))
+        labeled_masks = tf.concat([bg_slice, filt_seg], axis=0)
+        labeled_masks = tf.math.argmax(labeled_masks, axis=0)
+
+    return labeled_masks
+
 
 @tf.function
 def compute_solo_cls_targets(inputs,
