@@ -1121,13 +1121,11 @@ def eval(model, dataset, maxiter, threshold=0.75, **kwargs):
     FP = 0
     recall = np.zeros(npred, dtype=float)
     precision = np.zeros(npred, dtype=float)
-    AP = np.zeros(npred, dtype=float)
 
     for i in range(npred):
 
         if sorted_TP[i]:
             TP += 1
-            AP[i] = TP / (TP + FP)
         else:
             FP += 1
 
