@@ -126,8 +126,9 @@ def draw_instances(image,
                              alpha=alpha,
                              colors=colors)
 
-    bd = find_boundaries(labeled_masks, connectivity=2, mode='inner', background=0)
-    output_image = np.where(bd[..., np.newaxis],(0, 0, 0), output_image)
+    if draw_boundaries:
+        bd = find_boundaries(labeled_masks, connectivity=2, mode='inner', background=0)
+        output_image = np.where(bd[..., np.newaxis],(0, 0, 0), output_image)
 
     if cls_scores is None:
         cls_scores = np.ones(cls_ids.size)
