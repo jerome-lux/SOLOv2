@@ -42,8 +42,13 @@ Then create the model:
 
     mySOLOv2model = SOLOv2.model.SOLOv2Model(config)
 
+When using a custom backbone, you have to put the name of the layers that will be connected to the FPN in the dict "connection_layers"
+
+The model architecture can be accessed using the .model attribute
+
 ## Training with custom dataset: <br>
-Files are stored in 3 folders:<br>
+By default, the dataset is loaded using a custom DataLoader class<br>
+The dataset files should be stored in 3 folders:<br>
 /images: RGB images <br>
 /labels: labeled masks grey-level images (8, 16 or 32 bits int / uint) in **non compressed** format (png or bmp) <br>
 /annotations: one json file per image containing a dict of dicts keyed by labels, with the class, and box coordinates in [x0, y0, x1, y1] format <br>
@@ -65,9 +70,21 @@ then create a dataloader <br>
 
     trainset = SOLOv2.DataLoader("DATASET_PATH",cls_ind=cls_ind)
 
-use the train method, with chosen optimizer, batch size and callbacks <br>
+The dataset attribute is a tf.dataset and it will output:
+- image name,
+- image [H W, 3],
+- masks [H,W]: integer labeled instance image
+- box [N]: box in xyxy formt for each instance
+- cls_ids [N]: class id of each instance
+- labels [N]: label (in the mask image) of each instance
 
-    SOLOv2.model.train(detector,
+The dataset is batched using tf.data.experimental.dense_to_ragged_batch.
+
+It should be easy to create a DataLoader for other formats like COCO.
+
+To train the model, use the "train" function, with the chosen optimizer, batch size and callbacks: <br>
+
+    SOLOv2.model.train(mySOLOv2model,
                        trainset.dataset,
                        epochs=epochs,
                        val_dataset=None,
@@ -80,9 +97,27 @@ use the train method, with chosen optimizer, batch size and callbacks <br>
                        buffer=150)
 
 ## Inference
-A call to the model with a [1,H,W,3] image returns the N one-hot masks tensor (one slice per instance [1, N, H/2, W/2]) and corresponding classes [1, N] and scores [1, N]. <br>
-The inference works with batch size > 1 and the model then returns ragged tensors
+A call to the model with a [1, H, W, 3] image returns the N masks tensor (one slice per instance [1, N, H/2, W/2]) and corresponding classes [1, N] and scores [1, N]. <br>
+The model ALWAYS return ragged tensors, and should work with batchsize > 1.
+The final labeled prediction can be obtained by the SOLOv2.utils.decode_predictions function
 
-The model architecture can be accessed using the .model attribute
+    seg_peds, cls_ids, scores = mySOLOv2model(input)
+    labeled_masks = SOLOv2.utils.decode_predictions function(seg_preds, scores, threshold=0.5, by_scores=True)
+
+Results can be vizualised using the SOLOv2.visualization.draw_instances function:
+
+    img = SOLOv2.visualization.draw_instances(input, 
+               labeled_masks.numpy(), 
+               cls_ids=cls_labels[0,...].numpy() + 1, 
+               cls_scores=scores[0,...].numpy(), 
+               class_ids_to_name=id_to_cls, 
+               show=True, 
+               fontscale=0., 
+               fontcolor=(0,0,0),
+               alpha=0.5, 
+               thickness=0)
+
+Note that all inputs to this function must bhave a batch dimension an should be converted to numpy arrays.
+    
 
 
