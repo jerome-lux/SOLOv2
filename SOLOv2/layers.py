@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow.keras.layers as layers
 import tensorflow.keras.models as models
-import tensorflow_addons as tfa
+# import tensorflow_addons as tfa
 from tensorflow.keras.regularizers import l2
 
 import numpy as np
@@ -13,7 +13,7 @@ from functools import partial
 CONV_INIT = 'he_normal'
 
 NORM_DICT = {'bn': layers.BatchNormalization,
-             'gn': tfa.layers.GroupNormalization,
+             'gn': layers.GroupNormalization,
              'ln': layers.LayerNormalization}
 
 def points_nms(x):

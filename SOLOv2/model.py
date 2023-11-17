@@ -1,7 +1,7 @@
 # coding: utf-8
 
 import tensorflow as tf
-import tensorflow_addons as tfa
+# import tensorflow_addons as tfa
 from tensorflow.keras.regularizers import l2
 
 import numpy as np
@@ -20,7 +20,7 @@ CONV_INIT = 'he_normal'
 
 NORM_DICT = {
     'bn': layers.BatchNormalization,
-    'gn': tfa.layers.GroupNormalization,
+    'gn': layers.GroupNormalization,
     'ln': layers.LayerNormalization
 }
 
