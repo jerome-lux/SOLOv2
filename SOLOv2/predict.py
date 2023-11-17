@@ -152,7 +152,14 @@ args = parser.parse_args()
 
 
 def get_masks(seg_preds, scores, threshold=0.5, weight_by_scores=False):
-    """Get labeled masks from segmentation prediction and scores"""
+    """Get labeled masks from segmentation prediction and scores
+    threshold: only pixels with value > threshold are considered foreground
+    weight_by_scores: \n
+    - if True, each binary masks is weighted by their scores and sorted along the first dimension. Final instance are the argmax tensor of this weighted tensor.
+    It means that all pixels in a mask have the same value. It seems that it does not work better that the simpler option...
+    \n- if False, we just take the argmax of the segmentation score tensor.
+    # TODO, maybe weight the segmentation score by the object score ?
+    """
 
     # Sort instance by scores
     if weight_by_scores:
@@ -166,7 +173,7 @@ def get_masks(seg_preds, scores, threshold=0.5, weight_by_scores=False):
         sorted_masks = sorted_masks.T
         # add bg slice
         bg_slice = np.zeros((1, binary_masks.shape[1], binary_masks.shape[2]))
-        labeled_masks = np.concatenate([bg_slice, binary_masks], axis=0)
+        labeled_masks = np.concatenate([bg_slice, sorted_masks], axis=0)
         # Take argmax (e.g. mask swith higher scores, when two masks overlap)
         labeled_masks = np.argmax(labeled_masks, axis=0)
 
@@ -235,12 +242,18 @@ def filter_and_save_instances(
     img_id,
     crops_dir,
     resolution,
+    save_crops=True,
     minsize=MINSIZE,
     minarea=MINAREA,
     rand_bg=False,
+    bgcolor=BGCOLOR,
     del_bg=False,
 ):
-    """filter and save instances in a labeled image
+    """This function first delete small instance and then recompute the regionprops of instances **not touching edges**
+    It saves crops and update the coco and data dictionaries
+    It returns the RGB image with flat color on instances **not touching** the edges, as well as the updated labeled masks
+    (without small instances and instances touching edges)
+
     inputs:
     imgname: filename of RGB image
     image: RGB image
@@ -252,14 +265,11 @@ def filter_and_save_instances(
     data: data dict to update
     img_id: id of the image
     crops_dir: where to save crops
+    minsize: minsize of boxes
     minarea: minimum area of an instance
+    save_crops: if False the individual instances are not saved
     rand_bg: use random color to mask other instances in a crop
     del_bg: keep the background or only the instance pixels
-
-    This function first delete small instance and then recompute the regionprops of instances not touching edges
-    It saves crops and update coco and data dict
-    It returns the RGB image with flat color on instances **not touching** the edges, as well as the updated labeled masks
-    (without small instances and instances touching edges)
     """
 
     instance_counter = 0
@@ -309,7 +319,7 @@ def filter_and_save_instances(
         if rand_bg:
             bgcolor = np.random.random(3)
         else:
-            bgcolor = np.array(BGCOLOR) / 255.0
+            bgcolor = np.array(bgcolor) / 255.0
 
         crop_mask = updated_masks[boxes[i, 0] : boxes[i, 2], boxes[i, 1] : boxes[i, 3]]
         binary_mask = np.where(crop_mask == label, 1.0, 0.0).astype(np.uint8)
@@ -336,18 +346,19 @@ def filter_and_save_instances(
         cropname = "{}-CROP-{:03d}.jpg".format(os.path.splitext(imgname)[0], labels[i])
         data["filename"].append(cropname)
 
-        crop = image[boxes[i, 0] : boxes[i, 2], boxes[i, 1] : boxes[i, 3]]
+        if save_crops:
+            crop = image[boxes[i, 0] : boxes[i, 2], boxes[i, 1] : boxes[i, 3]]
 
-        if del_bg:
-            crop = np.where(crop_mask[..., np.newaxis] == label, crop, bgcolor)
-        else:
-            crop = np.where(
-                (crop_mask[..., np.newaxis] == label) | (crop_mask[..., np.newaxis] == 0),
-                crop,
-                bgcolor,
-            )
+            if del_bg:
+                crop = np.where(crop_mask[..., np.newaxis] == label, crop, bgcolor)
+            else:
+                crop = np.where(
+                    (crop_mask[..., np.newaxis] == label) | (crop_mask[..., np.newaxis] == 0),
+                    crop,
+                    bgcolor,
+                )
 
-        Image.fromarray((255 * crop).astype(np.uint8)).save(os.path.join(crops_dir, cropname), quality=95)
+            Image.fromarray((255 * crop).astype(np.uint8)).save(os.path.join(crops_dir, cropname), quality=95)
 
         # Create COCO annotation
         polys = binary_mask_to_polygon(
@@ -380,7 +391,7 @@ def main(
     model_file,
     deltaL,
     resolution,
-    thresholds,
+    thresholds=(0.5, 0.5, 0.6),
     weight_by_scores=False,
     max_detections=400,
     bgcolor=BGCOLOR,
@@ -388,12 +399,48 @@ def main(
     minsize=MINSIZE,
 ):
 
+    """Instance segmentation on an image or a series of images.
+    A SOLOv2 network is first used to preddict the instance masks, downsampling input images if needed.
+    Objects straddling two frames are used to determine the two overlap bands.
+    An image containing only objects touching the edges is formed from the overlap bands.
+    Entire objects are then extracted from this intermediate image.
+    Dans le cas où il n'y a qu'une image, les objets touchant le bord inférieur ne sont donc pas traités.
+
+    Inputs:
+    coco: a dict containing info, licence and categories in coco format
+    imsize: size of input images
+    input_dir: all the images in input_dir will be processed
+    output_dir: where to put teh results
+    model_file: path to tensorflow saved model
+    deltaL: if a box is less than deltaL from the image edge, the object is considered to be touching the edge.
+    resolution: res of the input images
+    trhesolds: a list of thresolds: (t1, t2, t3)
+        {"score_threshold": 0.5, "seg_threshold": 0.5, "nms_threshold": 0.6}
+    max_detections: lmax numebr of detected instances (beware the masks tensor shape is [max_instances, Nx, Ny]
+    minarea and minsize are the min area of instances (min area of each connected part of an instance) and minsize of boxes. Useful for filtering noise.
+
+    Outputs:
+    -COCO object (dict)
+    -data dict
+
+    Creates on disk:
+    - A coco file (json)
+    - A csv file containing instance boxes resolution, mass, area, class or other information (if available)
+    - label images  in output_dir/labels folder
+    - image superimposed with colored labels for vizualisation in output_dir/vizu folder (low-res images)
+    - individual instances in output_dir/crops folder
+    - newly created overlap bands images (full resolution) in output_dir/images
+
+    """
+    # TODO: maybe compute regionprops on low res images and scale up results to speed things up ?
+
+
     # Load model config and weights
     tf.config.run_functions_eagerly(True)
     tf.keras.backend.clear_session()
 
     model_directory = os.path.dirname(model_file)
-    with open(os.path.join(model_directory, "config.json"), "r") as configfile:
+    with open(os.path.join(model_directory, "config.json"), "r", encoding="utf-8") as configfile:
         config = json.load(configfile)
 
     modelconf = SOLOv2.Config(**config)
@@ -511,8 +558,10 @@ def main(
         pred_boxes = np.array([prop["bbox"] for prop in region_properties])
         labels = np.array([prop["label"] for prop in region_properties])
 
-        # Boxes not touching borders, boxes touching upper and lower border
+        # middle indexes: indexes of boxes not touching edges,
+        # up indexes: boxes touching upper edge (i.e. x->0)
         # TODO: check if an object touches both edges (normalement non !)
+
         if counter == 0:
             # on extrait toutes les boites sauf celle touchant le "bas" (x=nx)
             middle_indexes = np.where(pred_boxes[:, 2] < fullsize_nx - deltaL)
@@ -554,6 +603,8 @@ def main(
                 minsize=minsize,
                 rand_bg=False,
                 del_bg=False,
+                bgcolor=bgcolor,
+                save_crops=True
             )
 
         print(
@@ -694,6 +745,8 @@ def main(
                         minsize=minsize,
                         rand_bg=False,
                         del_bg=False,
+                        bgcolor=bgcolor,
+                        save_crops=True
                     )
 
                     print(
@@ -747,6 +800,9 @@ def main(
     df = pandas.DataFrame().from_dict(data)
     df = df.set_index('filename')
     df.to_csv(os.path.join(OUTPUT_DIR, "annotations.csv"), na_rep='nan', header=True)
+
+    # return COCO and data dict
+    return coco, data
 
 if __name__ == "__main__":
     main(coco=DEFAULT_COCO, **vars(args))
