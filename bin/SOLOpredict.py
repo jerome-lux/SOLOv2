@@ -2,6 +2,7 @@ import argparse
 import os
 import SOLOv2
 import datetime
+import numpy as np
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 import tensorflow as tf
@@ -21,6 +22,8 @@ MINAREA = 2048
 MINSIZE = 32
 BGCOLOR = (94, 160, 220)
 deltaL = 10
+
+now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 DEFAULT_COCO = {
     "info": {
@@ -117,7 +120,7 @@ parser.add_argument("--max_inst", dest="max_detections", default=400, type=int, 
 parser.add_argument(
     "--res",
     dest="resolution",
-    default=1,
+    default=np.nan,
     type=float,
     help="resolution of the input image",
 )
