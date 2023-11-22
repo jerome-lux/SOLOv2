@@ -6,3 +6,4 @@ from .loss import *
 from .visualization import *
 from .schedulers import *
 from .config import *
+from .predict import predict
