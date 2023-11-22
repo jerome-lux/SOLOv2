@@ -1,7 +1,6 @@
 import tensorflow as tf
 import tensorflow.keras.layers as layers
 import tensorflow.keras.models as models
-# import tensorflow_addons as tfa
 from tensorflow.keras.regularizers import l2
 
 import numpy as np

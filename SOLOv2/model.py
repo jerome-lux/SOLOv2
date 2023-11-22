@@ -1,7 +1,6 @@
 # coding: utf-8
 
 import tensorflow as tf
-# import tensorflow_addons as tfa
 from tensorflow.keras.regularizers import l2
 
 import numpy as np
