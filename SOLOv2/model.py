@@ -113,7 +113,6 @@ def SOLOv2_head(ncls,
                           outputs=[class_head, kernel_head],
                           name=name)
 
-
 def SOLOv2_mask_head(fpn_features,
                      in_ch=258,
                      mid_ch=128,
@@ -122,7 +121,8 @@ def SOLOv2_mask_head(fpn_features,
                      normalization='gn',
                      normalization_kw={'groups': 32}):
 
-    # each FPN level is upscaled to the dim of the first level in the input list (usually P2 with stride=4)
+    # each FPN level is upscaled to size H/2 x W/2, where H and W are the dims of the input image.
+    # TODO: add an option for upscaling only to H/4 x W/4 (like in the original SOLOv2 implementation) to limit memory consumption...
     # Then all levels are added and conv
 
     outputs = []

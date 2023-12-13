@@ -347,7 +347,7 @@ def predict(
     coco["annotations"] = []
     coco["images"] = []
 
-    OUTPUT_DIR = output_dir
+    OUTPUT_DIR = os.path.join(output_dir, str(datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
     CROPS_DIR = OUTPUT_DIR / Path("crops")
     VIZU_DIR = OUTPUT_DIR / Path("vizu")
     LABELS_DIR = OUTPUT_DIR / Path("labels")
