@@ -124,7 +124,7 @@ def filter_and_save_instances(
     bgcolor=BGCOLOR,
     del_bg=False,
 ):
-    """This function first delete small instance and then recompute the regionprops of instances **not touching edges**
+    """This function first delete small instances and then recompute the regionprops of instances **not touching edges** (not in indexes)
     It saves crops and update the coco and data dictionaries
     It returns the RGB image with flat color on instances **not touching** the edges, as well as the updated labeled masks
     (without small instances and instances touching edges)
@@ -288,7 +288,7 @@ def predict(
     resolution: res of the input images
     trhesolds: a list of thresolds: (t1, t2, t3)
         {"score_threshold": 0.5, "seg_threshold": 0.5, "nms_threshold": 0.6}
-    max_detections: lmax numebr of detected instances (beware the masks tensor shape is [max_instances, Nx, Ny]
+    max_detections: lmax number of detected instances (beware the masks tensor shape is [max_instances, Nx, Ny]
     minarea and minsize are the min area of instances (min area of each connected part of an instance) and minsize of boxes. Useful for filtering noise.
 
     Outputs:
@@ -434,7 +434,6 @@ def predict(
         # middle indexes: indexes of boxes not touching edges,
         # up indexes: boxes touching upper edge (i.e. x->0)
         # TODO: check if an object touches both edges (normalement non !)
-
         if counter == 0:
             # on extrait toutes les boites sauf celle touchant le "bas" (x=nx)
             middle_indexes = np.where(pred_boxes[:, 2] < fullsize_nx - deltaL)
@@ -657,6 +656,237 @@ def predict(
         prev_fullsize_bottom_boxes = pred_boxes[bottom_indexes]
         prev_fullsize_cleaned_image = fullsize_cleaned_image
         prev_imgname = imgname
+
+    info_filepath = os.path.join(OUTPUT_DIR, "info.json")
+    config = {"SEGNET": str(model_file), "DATA_DIR": str(input_dir)}
+    with open(info_filepath, "w", encoding="utf-8") as jsonconfig:
+        json.dump(config, jsonconfig)
+
+    print("Saving COCO in ", OUTPUT_DIR)
+    with open(os.path.join(OUTPUT_DIR, "coco_annotations.json"), "w", encoding="utf-8") as jsonfile:
+        json.dump(coco, jsonfile)
+
+    # Set class and mass to None and nan, since they have not been predicted yet
+    data["class"] = "None"
+    data["mass"] = "nan"
+    df = pandas.DataFrame().from_dict(data)
+    df = df.set_index("filename")
+    df.to_csv(os.path.join(OUTPUT_DIR, "annotations.csv"), na_rep="nan", header=True)
+
+    # return COCO and data dict
+    return coco, data
+
+def predict_onebyone(
+    coco,
+    imsize,
+    input_dir,
+    output_dir,
+    model_file,
+    resolution,
+    thresholds=(0.5, 0.5, 0.6),
+    weight_by_scores=False,
+    max_detections=400,
+    bgcolor=BGCOLOR,
+    minarea=MINAREA,
+    minsize=MINSIZE,
+):
+    """Instance segmentation on an image or a series of images.
+    A SOLOv2 network is first used to predict the instance masks, downsampling input images if needed.
+
+    Inputs:
+    coco: a dict containing info, licence and categories in coco format
+    imsize: size of input images
+    input_dir: all the images in input_dir will be processed
+    output_dir: where to put teh results
+    model_file: path to tensorflow saved model
+    resolution: res of the input images
+    trhesolds: a list of thresolds: (t1, t2, t3)
+        {"score_threshold": 0.5, "seg_threshold": 0.5, "nms_threshold": 0.6}
+    max_detections: lmax number of detected instances (beware the masks tensor shape is [max_instances, Nx, Ny]
+    minarea and minsize are the min area of instances (min area of each connected part of an instance) and minsize of boxes. Useful for filtering noise.
+
+    Outputs:
+    -COCO object (dict)
+    -data dict
+
+    Creates on disk:
+    - A coco file (json)
+    - A csv file containing instance boxes resolution, mass, area, class or other information (if available)
+    - label images  in output_dir/labels folder
+    - image superimposed with colored labels for vizualisation in output_dir/vizu folder (low-res images)
+    - individual instances in output_dir/crops folder
+    - newly created overlap bands images (full resolution) in output_dir/images
+
+    """
+    # TODO: maybe compute regionprops on low res images and scale up results to speed things up ?
+
+    # Load model config and weights
+    tf.config.run_functions_eagerly(True)
+    tf.keras.backend.clear_session()
+
+    model_directory = os.path.dirname(model_file)
+    with open(os.path.join(model_directory, "config.json"), "r", encoding="utf-8") as configfile:
+        config = json.load(configfile)
+
+    # Creating architecture using config file
+    modelconf = SOLOv2.Config(**config)
+
+    detector = SOLOv2.model.SOLOv2Model(modelconf)
+    print(f"Loading model {model_file}...", end="")
+    # Loading weights
+    detector.load_weights(model_file, by_name=False, skip_mismatch=False).expect_partial()
+    print("OK")
+
+    # Retrieve images
+    img_dict = {}
+    for root, _, files in os.walk(input_dir):
+        for f in files:
+            if os.path.isfile(os.path.join(root, f)) and os.path.splitext(f)[-1].lower() in VALID_IMAGE_FORMATS:
+                img_dict[f] = os.path.join(root, f)
+
+    print("Found", len(img_dict), "images in ", input_dir)
+
+    img_counter = -1
+
+    default_kwargs = {
+        "score_threshold": thresholds[0],
+        "seg_threshold": thresholds[1],
+        "nms_threshold": thresholds[2],
+        "max_detections": max_detections,
+    }
+
+    print("Resolution of original image:", resolution, "pixels/mm")
+
+    coco["info"]["description"] = input_dir
+    coco["annotations"] = []
+    coco["images"] = []
+
+    OUTPUT_DIR = os.path.join(output_dir, str(datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+    CROPS_DIR = OUTPUT_DIR / Path("crops")
+    VIZU_DIR = OUTPUT_DIR / Path("vizu")
+    LABELS_DIR = OUTPUT_DIR / Path("labels")
+    OVERLAPPING_IMGS_DIR = OUTPUT_DIR / Path("images")
+
+    os.makedirs(CROPS_DIR, exist_ok=True)
+    os.makedirs(VIZU_DIR, exist_ok=True)
+    os.makedirs(LABELS_DIR, exist_ok=True)
+    os.makedirs(OVERLAPPING_IMGS_DIR, exist_ok=True)
+
+    data = {
+        "baseimg": [],
+        "label": [],
+        "res": [],
+        "class": [],
+        "x0": [],
+        "x1": [],
+        "y0": [],
+        "y1": [],
+        "area": [],
+        "mass": [],
+        "filename": [],
+    }
+
+    nx, ny = imsize
+
+    keys = sorted(list(img_dict.keys()))
+    # np.random.shuffle(keys)
+
+    for counter, imgname in enumerate(keys):
+        print(
+            "Processing image {} size ({}/{})".format(imgname, counter, len(keys)),
+            end="",
+        )
+        impath = img_dict[imgname]
+        PILimg = Image.open(impath)
+        fullsize_image = np.array(PILimg) / 255.0
+        image = tf.image.resize_with_pad(fullsize_image, nx, ny, antialias=True)
+        img_counter += 1
+        coco["images"].append(
+            {
+                "file_name": imgname,
+                "coco_url": "",
+                "height": PILimg.height,
+                "width": PILimg.width,
+                "date_captured": "",
+                "id": img_counter,
+            }
+        )
+        # Resize if the ratio nx/ny is not the same (if not, bboxes are not rescaled correctly)
+        fullsize_nx, fullsize_ny, _ = fullsize_image.shape
+        if nx * fullsize_ny != fullsize_nx * ny:
+            ratio = min(nx / fullsize_nx, ny / fullsize_ny)
+            fullsize_image = tf.image.resize_with_pad(fullsize_image, int(nx / ratio), int(ny / ratio), antialias=True)
+            fullsize_nx, fullsize_ny, _ = fullsize_image.shape
+
+        # Get network predictions
+        seg_preds, scores, cls_labels = detector(image[tf.newaxis, ...], training=False, **default_kwargs)
+
+        seg_preds = seg_preds[0].numpy()
+        scores = scores[0].numpy()
+        cls_labels = cls_labels[0].numpy()
+
+        if scores.size <= 0:  # No detection !
+            continue
+
+        # Get labeled mask (int)
+        labeled_masks = get_masks(
+            seg_preds,
+            scores,
+            threshold=default_kwargs["seg_threshold"],
+            weight_by_scores=weight_by_scores,
+        )
+
+        pred_mask_fullsize = sk.transform.resize(
+            labeled_masks, (fullsize_nx, fullsize_ny), order=0, anti_aliasing=False
+        )
+
+        # Extract bboxes
+        region_properties = regionprops(pred_mask_fullsize)
+        pred_boxes = np.array([prop["bbox"] for prop in region_properties])
+        labels = np.array([prop["label"] for prop in region_properties])
+        indexes = np.arange(labels.shape[0])
+
+        if labels.shape[0] > 0:
+            (
+                fullsize_cleaned_image,
+                pred_mask_fullsize,
+                n_inst,
+            ) = filter_and_save_instances(
+                imgname=imgname,
+                image=fullsize_image,
+                boxes=pred_boxes,
+                indexes=indexes,
+                labels=labels,
+                masks=pred_mask_fullsize,
+                coco=coco,
+                data=data,
+                img_id=img_counter,
+                resolution=resolution,
+                crops_dir=CROPS_DIR,
+                minarea=minarea,
+                minsize=minsize,
+                rand_bg=False,
+                del_bg=False,
+                bgcolor=bgcolor,
+                save_crops=True,
+            )
+
+            print(f"...OK. Found {n_inst} instances. ")
+
+            # Save labels
+            labelname = "{}.png".format(os.path.splitext(imgname)[0])
+            Image.fromarray(pred_mask_fullsize.astype(np.uint16)).save(os.path.join(LABELS_DIR, labelname))
+
+            if SAVE_IMGS:
+                vizuname = "VIZU-{}.jpg".format(os.path.splitext(imgname)[0])
+                resized_masks = sk.transform.resize(pred_mask_fullsize, (nx, ny), order=0, anti_aliasing=False)
+                bd = sk.segmentation.find_boundaries(resized_masks, connectivity=2, mode="inner", background=0)
+                vizu = label2rgb(resized_masks, image, alpha=0.25, colors=SOLOv2.visualization._COLORS)
+                vizu = np.where(bd[..., np.newaxis], (0, 0, 0), vizu)
+                vizu = np.around(255 * vizu).astype(np.uint8)
+                Image.fromarray(vizu).save(os.path.join(VIZU_DIR, vizuname))
+        else:
+            print("...OK. No instance found !")
 
     info_filepath = os.path.join(OUTPUT_DIR, "info.json")
     config = {"SEGNET": str(model_file), "DATA_DIR": str(input_dir)}
