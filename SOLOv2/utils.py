@@ -6,7 +6,7 @@ import numpy as np
 def decode_predictions(seg_preds, scores, threshold=0.5, by_scores=True):
 
     """ Compute the labeled mask array from segmentation predictions.
-    If two mask overlap, the one with either the higher score or the higher seg value is chosen
+    If two masks overlap, the one with either the higher score or the higher seg value is chosen
     return labeled array
     inputs:
     seg_preds: (N, H, W) one predicted mask per slice (sigmoid activation)
@@ -114,10 +114,10 @@ def compute_solo_cls_targets(inputs,
     classes_targets = []
     labels_targets = []
 
-    for lvl, gridesize in enumerate(grid_sizes):
+    for lvl, gridsize in enumerate(grid_sizes):
 
         #Create empty target image
-        lvl_imshape = (gridesize * nx//maxdim, gridesize * ny//maxdim)
+        lvl_imshape = (gridsize * nx//maxdim, gridsize * ny//maxdim)
 
         cls_img = tf.zeros(lvl_imshape, dtype=tf.int32)
         labels_img = tf.zeros(lvl_imshape, dtype=tf.int32)
@@ -147,7 +147,7 @@ def compute_solo_cls_targets(inputs,
             # Get locations coordinates fo this level [*in current image coordinates !*]
             locations_lvl = tf.cast(compute_locations(1, lvl_imshape), tf.float32)
 
-            # GT targets are located inside the the box reduced by the offset_factor
+            # GT targets are located inside the box reduced by the offset_factor
             for i in tf.range(0, tf.shape(cls_per_lvl[lvl])[0]):
 
                 # box = denorm_boxes_lvl[i, ...]

@@ -7,6 +7,8 @@ from skimage.segmentation import find_boundaries
 from skimage.color import label2rgb
 from skimage.segmentation import find_boundaries
 
+import tensorflow as tf
+
 _COLORS = np.array(
     [
         0.000, 0.447, 0.741,
@@ -96,7 +98,6 @@ def draw_instances(image,
                    alpha=0.5,
                    thickness=1):
 
-    import tensorflow as tf
     """draw masks with class labels and probabilities
     inputs:
     image [H, W, 3]: input image to draw boxes onto
