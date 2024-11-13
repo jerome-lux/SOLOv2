@@ -80,8 +80,8 @@ def compute_solo_cls_targets(inputs,
     maxdim = tf.maximum(nx, ny)
 
     # bboxes size x0, y0, x1, y1 where x1 and y1 are OUTSIDE the box
-    dx = tf.maximum((bboxes[..., 2] - bboxes[..., 0]) * (nx - 1) - 1, 0.)
-    dy = tf.maximum((bboxes[..., 3] - bboxes[..., 1]) * (ny - 1) - 1, 0.)
+    dx = tf.maximum((bboxes[..., 2] - bboxes[..., 0]) * (nx - 1), 0.)
+    dy = tf.maximum((bboxes[..., 3] - bboxes[..., 1]) * (ny - 1), 0.)
 
     dmin = tf.math.minimum(dx, dy)
 
@@ -117,15 +117,15 @@ def compute_solo_cls_targets(inputs,
     for lvl, gridsize in enumerate(grid_sizes):
 
         #Create empty target image
-        lvl_imshape = (gridsize * nx//maxdim, gridsize * ny//maxdim)
+        lvl_imshape = (gridsize * nx // maxdim, gridsize * ny // maxdim)
 
         cls_img = tf.zeros(lvl_imshape, dtype=tf.int32)
         labels_img = tf.zeros(lvl_imshape, dtype=tf.int32)
 
         if len(cls_per_lvl[lvl]) > 0:
             # compute  areas of boxes -could use area of masks instead...
-            sq_areas = (bboxes_per_lvl[lvl][..., 2]-bboxes_per_lvl[lvl][..., 0]
-                        ) * (bboxes_per_lvl[lvl][..., 3]-bboxes_per_lvl[lvl][..., 1])
+            sq_areas = (bboxes_per_lvl[lvl][..., 2] - bboxes_per_lvl[lvl][..., 0]
+                        ) * (bboxes_per_lvl[lvl][..., 3] - bboxes_per_lvl[lvl][..., 1])
             # sort by descending areas. if two targets overlap, it is the smallest box that have priority
             ordered_boxes_indices = tf.argsort(sq_areas, axis=-1, direction='DESCENDING')
             # reorder the bboxes tensor and corresponding labels
@@ -167,13 +167,14 @@ def compute_solo_cls_targets(inputs,
                 #                           (locations_lvl[:, 0] <= tf.math.ceil(cx + x_offset)) &
                 #                           (locations_lvl[:, 1] >= tf.math.floor(cy - y_offset)) &
                 #                           (locations_lvl[:, 1] <= tf.math.ceil(cy + y_offset)))
-                inside_indices = tf.where((locations_lvl[:, 0] >= lvl_nx * (cx - dx * offset_factor) - 0.5) &
-                                          (locations_lvl[:, 0] < lvl_nx * (cx + dx * offset_factor) - 0.5) &
-                                          (locations_lvl[:, 1] >= lvl_ny * (cy - dy * offset_factor) - 0.5) &
-                                          (locations_lvl[:, 1] < lvl_ny * (cy + dy * offset_factor) - 0.5))
 
-                cx = tf.maximum(tf.cast(tf.math.round(lvl_nx * cx - 0.5), tf.int32), 0)
-                cy = tf.maximum(tf.cast(tf.math.round(lvl_ny * cy - 0.5), tf.int32), 0)
+                inside_indices = tf.where((locations_lvl[:, 0] >= (lvl_nx - 1) * (cx - dx * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 0] < (lvl_nx - 1) * (cx + dx * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 1] >= (lvl_ny - 1) * (cy - dy * offset_factor) - 0.5) &
+                                          (locations_lvl[:, 1] < (lvl_ny - 1) * (cy + dy * offset_factor) - 0.5))
+
+                cx = tf.maximum(tf.cast(tf.math.round(lvl_nx * cx), tf.int32), 0)
+                cy = tf.maximum(tf.cast(tf.math.round(lvl_ny * cy), tf.int32), 0)
                 center = tf.where((tf.cast(locations_lvl[:, 0], tf.int32) == cx) &
                                  (tf.cast(locations_lvl[:, 1], tf.int32) == cy))
                 inside_indices = tf.concat([center, inside_indices], axis=0)
