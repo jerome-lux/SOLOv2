@@ -123,7 +123,7 @@ class DataLoader:
             data = json.load(jsonfile)
             bboxes = np.array([v["bbox"] for v in data.values()]).astype(np.float32)
             # try:
-            bboxes = utils.normalize_bboxes(bboxes, nx, ny)
+            bboxes = utils.normalize_bboxes(bboxes, nx-1, ny-1)
             # except Exception as e:
             #     tf.print("Error, cannot read boxes in ", imgfn.numpy(), nx, ny, bboxes.shape, "\n bboxes:", bboxes)
             #     tf.print(e)
