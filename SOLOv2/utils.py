@@ -131,6 +131,7 @@ def compute_solo_cls_targets(inputs,
             # reorder the bboxes tensor and corresponding labels
             # ordered_bboxes_lvl = tf.gather(bboxes_per_lvl[lvl], ordered_boxes_indices)
             ordered_labels = tf.gather(labels_per_lvl[lvl], ordered_boxes_indices)
+            ordered_cls = tf.gather(cls_per_lvl[lvl], ordered_boxes_indices)
 
             # Now generate the targets
             lvl_nx, lvl_ny = lvl_imshape
@@ -186,7 +187,7 @@ def compute_solo_cls_targets(inputs,
                 inside_coords = tf.cast(tf.stack([inside_xc, inside_yc], -1), tf.int32)
 
                 cls_img = tf.tensor_scatter_nd_update(
-                    cls_img, inside_coords, tf.zeros(tf.shape(inside_coords)[0], dtype=tf.int32) + cls_per_lvl[lvl][i])
+                    cls_img, inside_coords, tf.zeros(tf.shape(inside_coords)[0], dtype=tf.int32) + ordered_cls[i])
                 labels_img = tf.tensor_scatter_nd_update(
                     labels_img, inside_coords, tf.zeros(tf.shape(inside_coords)[0], dtype=tf.int32) + ordered_labels[i])
         # Append the flattened targets
