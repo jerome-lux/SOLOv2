@@ -24,13 +24,13 @@ def compute_image_loss(inputs, weights=[1., 1.], kernel_size=1, kernel_depth=256
     max_label = tf.reduce_max(labels)
     pos_idx = tf.where(labels_targets > 0)
 
-    ohe_masks = tf.one_hot(gt_masks, max_label+1)[..., 1:] # max label + 1 for bg
+    ohe_masks = tf.one_hot(gt_masks, max_label + 1)[..., 1:] # max label + 1 for bg
     # ohe_masks = tf.reshape(ohe_masks,[-1])
     # print("OHE GT MASK", ohe_masks.shape, ohe_masks.shape[:-1])
     # Here, each gt pixel is associated with a mask. Pixels of the same object are associated with the same masks
     mask_targets = tf.TensorArray(tf.float32, size=0, dynamic_size=True, element_shape=ohe_masks.shape[:-1])
     for i in tf.range(tf.shape(pos_idx)[0]):
-        mask_targets = mask_targets.write(tf.cast(i, tf.int32), ohe_masks[..., labels_targets[pos_idx[i,0]] - 1]) #labels - 1 because label 1 is at slice 0
+        mask_targets = mask_targets.write(tf.cast(i, tf.int32), ohe_masks[..., labels_targets[pos_idx[i, 0]] - 1]) # labels - 1 because label 1 is at slice 0
         # Does not work with concat
         # mask_targets = tf.concat([mask_targets, ohe_masks[..., labels_targets[i], tf.newaxis]], axis=-1)
 
